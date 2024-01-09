@@ -133,21 +133,20 @@ display(df)
 
 # COMMAND ----------
 
-# Weather data
-from pyspark.sql.functions import col, unix_timestamp, to_date, to_timestamp
+from pyspark.sql.functions import col, unix_timestamp
 from pyspark.sql.types import TimestampType
 
+# set the legacy time parser policy
+spark.conf.set("spark.sql.legacy.timeParserPolicy", "LEGACY")
+
+# Weather data
 weather_df = weather_df.withColumn("formatted_datetime", unix_timestamp(col("datetime"),"yyyy-MM-dd").cast(TimestampType()))
 
 df = df.withColumn("formatted_datetime", unix_timestamp(col("time_generated"),"yyyy-MM-dd").cast(TimestampType()))
 df = df.withColumn("datetime", unix_timestamp(col("time_generated"), "yyyy-MM-dd'T'HH:mm:ss'Z'").cast(TimestampType()))
-df = df.withColumn("time_generated1", to_date(col("time_generated")))
-
 
 display(df)
 display(weather_df)
-
-
 
 # COMMAND ----------
 
