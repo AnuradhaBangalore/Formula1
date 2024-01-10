@@ -4,7 +4,6 @@
 # COMMAND ----------
 
 #Extracted the historical weather data from https://www.visualcrossing.com/weather/weather-data-services, fmi does not have historical data
-
 import urllib.request
 import sys
 import json
@@ -26,6 +25,7 @@ except  urllib.error.URLError as e:
 
 # COMMAND ----------
 
+import json
 json_string = json.dumps(jsonData)
 
 # COMMAND ----------
@@ -53,7 +53,6 @@ exploded_df = json_df.select("latitude", "longitude", "resolvedAddress", "timezo
 
 # Extract datetime, feelslike, and pressure from the exploded DataFrame
 weather_df = exploded_df.select(
-    
                                 col("latitude"),\
                                 col("longitude"),\
                                 col("resolvedAddress"),\
@@ -105,21 +104,18 @@ def mount_adls(storage_account_name, container_name):
       extra_configs = configs)
     
     display(dbutils.fs.mounts())
-
-
 ##### Mount csv Container
 mount_adls('ewqstorageaccount', 'csv')
 
 # COMMAND ----------
 
 ### List all files from storage account container 
-
 display(dbutils.fs.ls("/mnt/ewqstorageaccount/csv"))
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC #### 2) Reading CSV files into dataframe
+# MAGIC #### 3. Reading EWQ CSV files into dataframe
 
 # COMMAND ----------
 
@@ -133,68 +129,79 @@ display(df)
 
 # COMMAND ----------
 
-from pyspark.sql.functions import col, unix_timestamp
-from pyspark.sql.types import TimestampType
-
-# set the legacy time parser policy
-spark.conf.set("spark.sql.legacy.timeParserPolicy", "LEGACY")
-
-# Weather data
-weather_df = weather_df.withColumn("formatted_datetime", unix_timestamp(col("datetime"),"yyyy-MM-dd").cast(TimestampType()))
-
-df = df.withColumn("formatted_datetime", unix_timestamp(col("time_generated"),"yyyy-MM-dd").cast(TimestampType()))
-df = df.withColumn("datetime", unix_timestamp(col("time_generated"), "yyyy-MM-dd'T'HH:mm:ss'Z'").cast(TimestampType()))
-
-display(df)
-display(weather_df)
+# MAGIC %md
+# MAGIC #### 4. Joining EWQ Dataframe and weather dataframe
 
 # COMMAND ----------
 
-
-# Perform an inner join on the "datetime" and "time_generated" columns
-joined_df = weather_df.join(df, weather_df["formatted_datetime"] == df["time_generated1"], "inner")
+from pyspark.sql.functions import from_utc_timestamp, date_format
+df = df.withColumn("date", date_format(from_utc_timestamp("time_generated", "UTC"), "yyyy-MM-dd"))
+joined_df = df.join(weather_df, df["date"] == weather_df["datetime"], "inner")
 display(joined_df)
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC #### 3) Estimated waiting time in minutes
+# MAGIC #### 5. Estimated waiting time in minutes
 
 # COMMAND ----------
 
-from pyspark.sql.functions import expr, col, unix_timestamp , count
-
-df_estimated_time_in_secs = joined_df \
-    .withColumn("estimated_waiting_time_secs", expr("unix_timestamp(time_called) - unix_timestamp(time_generated)")) 
-
-#display(df_estimated_time_in_secs)
-
-df_estimated_time_in_mins = df_estimated_time_in_secs \
-    .withColumn("estimated_waiting_time_minutes", (col("estimated_waiting_time_secs") / 60))
-display(df_estimated_time_in_mins)
-
-
-# COMMAND ----------
-
-display(df_estimated_time_in_mins)
-
-# COMMAND ----------
-
-##### calculating estiamted service in minutes
-
-display(df.withColumn("ServiceDuration_Mins", col("dur_service") / 60))
-
-# COMMAND ----------
-
-# Calculate the total service duration in minutes and group by 'area_code' 'group_name' and 'desk_number'
-
-from pyspark.sql.functions import col, sum, round, count
-
-result_df = (
-    df.withColumn("ServiceDuration_Mins", round(col("dur_service") / 60, 1)) 
-      .groupBy("area_code", "group_name", "desk_number")
-      .agg(sum("ServiceDuration_Mins").alias("Total_Service_Duration_Mins"),count("id").alias("Total_Number_of_Tokens"))
+from pyspark.sql.functions import from_utc_timestamp,expr,round
+estimated_waiting_time = joined_df.withColumn(
+    "estimated_waiting_time",
+   round(expr("unix_timestamp(time_called) - unix_timestamp(time_generated)")/60,2)
 )
+columns_to_drop = ["master_code", "group_number", "ticket_uuid", "time_processed", "dur_approach", "status", "resolution", "lang_code", "external_id", "mobile_tracked", "priority", "metadata", "resolvedAddress"]
+estimated_waiting_time = estimated_waiting_time.drop(*columns_to_drop)
+display(estimated_waiting_time)
+
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC #### 6. calculating average waiting time per area code
+
+# COMMAND ----------
+
+from pyspark.sql.functions import col, avg, round
+avg_waiting_time_per_area = (estimated_waiting_time.orderBy(col("area_code")).groupBy("area_code").agg(round(avg("estimated_waiting_time"), 2).alias("avg_estimated_waiting_time")))
 
 # Display the result
-display(result_df)
+display(avg_waiting_time_per_area)
+
+# COMMAND ----------
+
+# Registering the resulting DataFrame as a temporary SQL table
+avg_waiting_time_per_area.createOrReplaceTempView("avg_waiting_time_table")
+
+# Using Databricks display function to visualize the results
+display(spark.sql("SELECT * FROM avg_waiting_time_table"))
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC #### 7. Estimated Service time in minutes
+
+# COMMAND ----------
+
+from pyspark.sql.functions import col, round
+estimated_service_time = joined_df.withColumn(
+    "estimated_service_time", round(col("dur_service") / 60, 2)
+)
+columns_to_drop = ["master_code", "group_number", "ticket_uuid", "time_processed", "dur_approach", "status", "resolution", "lang_code", "external_id", "mobile_tracked", "priority", "metadata", "resolvedAddress"]
+
+estimated_service_time = estimated_service_time.drop(*columns_to_drop)
+# Display the DataFrame with the new column
+display(estimated_service_time)
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC #### 8. calculating average service time per area code
+
+# COMMAND ----------
+
+from pyspark.sql.functions import col, avg, round
+avg_service_time_per_area = (estimated_service_time.orderBy(col("area_code")).groupBy("area_code").agg(round(avg("estimated_service_time"), 2).alias("avg_estimated_service_time")))
+# Display the result
+display(avg_service_time_per_area)
