@@ -9,7 +9,7 @@ import sys
 import json
                 
 try: 
-  ResultBytes = urllib.request.urlopen("https://weather.visualcrossing.com/VisualCrossingWebServices/rest/services/timeline/Finland/2022-12-10/2023-12-13?unitGroup=metric&include=days&key=DAN9AESNZH5WS835QFJADVHCX&contentType=json")
+  ResultBytes = urllib.request.urlopen("https://weather.visualcrossing.com/VisualCrossingWebServices/rest/services/timeline/Finland/2022-12-10/lim13?unitGroup=metric&include=days&key=DAN9AESNZH5WS835QFJADVHCX&contentType=json")
   
   # Parse the results as JSON
   jsonData = json.load(ResultBytes)
@@ -43,6 +43,10 @@ display(json_string)
 
 # COMMAND ----------
 
+json_df = spark.read.json("/dbfs/fmi/historical_weather.json")
+
+# COMMAND ----------
+
 from pyspark.sql.functions import col
 from pyspark.sql.functions import explode
 
@@ -53,19 +57,19 @@ exploded_df = json_df.select("latitude", "longitude", "resolvedAddress", "timezo
 
 # Extract datetime, feelslike, and pressure from the exploded DataFrame
 weather_df = exploded_df.select(
-                                col("latitude"),\
-                                col("longitude"),\
-                                col("resolvedAddress"),\
-                                col("timezone"),\
-                                col("tzoffset"),\
-                                col("day.datetime").alias("datetime"),\
-                                col("day.feelslike").alias("feelslike"),\
-                                col("day.pressure").alias("pressure"),\
-                                col("day.temp").alias("temperature"),\
-                                col("day.snow").alias("snow"),\
-                                col("day.windspeed").alias("windspeed"),\
-                                col("day.visibility").alias("visibility")
-                            )
+    col("latitude"),
+    col("longitude"),
+    col("resolvedAddress"),
+    col("timezone"),
+    col("tzoffset"),
+    col("day.datetime").alias("datetime"),
+    col("day.feelslike").alias("feelslike"),
+    col("day.pressure").alias("pressure"),
+    col("day.temp").alias("temperature"),
+    col("day.snow").alias("snow"),
+    col("day.windspeed").alias("windspeed"),
+    col("day.visibility").alias("visibility")
+)
 
 # COMMAND ----------
 
@@ -125,6 +129,9 @@ df2 = spark.read.option("header", "true").option("delimiter",";").csv("/mnt/ewqs
 
 ### combining 2 csv files from storage account 
 df = df1.union(df2)
+display(df.count())
+display(df1.count())
+display(df2.count())
 display(df)
 
 # COMMAND ----------
@@ -138,6 +145,13 @@ from pyspark.sql.functions import from_utc_timestamp, date_format
 df = df.withColumn("date", date_format(from_utc_timestamp("time_generated", "UTC"), "yyyy-MM-dd"))
 joined_df = df.join(weather_df, df["date"] == weather_df["datetime"], "inner")
 display(joined_df)
+
+display(joined_df.count())
+
+
+
+joined_df.coalesce(1).write.mode("overwrite").option("header",True).csv("/mnt/ewqstorageaccount/csv/join")
+
 
 # COMMAND ----------
 
@@ -163,8 +177,16 @@ display(estimated_waiting_time)
 
 # COMMAND ----------
 
-from pyspark.sql.functions import col, avg, round
-avg_waiting_time_per_area = (estimated_waiting_time.orderBy(col("area_code")).groupBy("area_code").agg(round(avg("estimated_waiting_time"), 2).alias("avg_estimated_waiting_time")))
+from pyspark.sql.functions import col, avg, round, max
+
+avg_waiting_time_per_area = (estimated_waiting_time
+                             .orderBy(col("area_code"))
+                             .groupBy("area_code")
+                             .agg(round(avg("estimated_waiting_time"), 2).alias("avg_estimated_waiting_time"),
+                                  round(avg("snow"), 2).alias("Average_Snow"),
+                                  round(avg("temperature"), 2).alias("avg_temperature"),
+                                  max("datetime").alias("weather_date"))
+                             )
 
 # Display the result
 display(avg_waiting_time_per_area)
@@ -202,6 +224,11 @@ display(estimated_service_time)
 # COMMAND ----------
 
 from pyspark.sql.functions import col, avg, round
-avg_service_time_per_area = (estimated_service_time.orderBy(col("area_code")).groupBy("area_code").agg(round(avg("estimated_service_time"), 2).alias("avg_estimated_service_time")))
+avg_service_time_per_area = (estimated_service_time.orderBy(col("area_code")).groupBy("area_code")
+                             .agg(round(avg("estimated_service_time"), 2).alias("avg_estimated_service_time"),
+                                round(avg("snow"), 2).alias("Average_Snow"),
+                                  round(avg("temperature"), 2).alias("avg_temperature"),
+                                  max("datetime").alias("weather_date"))   
+                            )
 # Display the result
 display(avg_service_time_per_area)
